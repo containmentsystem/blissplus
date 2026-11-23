@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>c+bliss</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #3a3a3a; overflow: hidden; }
+  body { font: 11px/1.3 Helvetica, Arial, sans-serif; color: #00ff41; text-transform: lowercase; letter-spacing: .02em; }
+  canvas { display: block; }
+  #ui { position: fixed; left: 12px; top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; gap: 4px; flex-wrap: wrap; }
+  button { font: inherit; text-transform: inherit; letter-spacing: inherit; color: #00ff41; background: #3a3a3a;
+    border: 1px solid #00ff41; border-radius: 0; padding: 5px 8px; cursor: pointer; }
+  button.on { background: #00ff41; color: #2a2a2a; }
+  #info { position: fixed; left: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 3px; }
+  .k { display: flex; align-items: center; gap: 6px; }
+  .sw { width: 8px; height: 8px; box-sizing: border-box; }
+  #labels { position: fixed; inset: 0; pointer-events: none; }
+  .lb { position: absolute; display: flex; align-items: center; gap: 4px; white-space: nowrap; transform: translate(-3px, -50%); }
+  .lb i { width: 5px; height: 5px; background: currentColor; display: block; }
+  .lb.w { color: #e8e8e8; }
+  #land { position: fixed; inset: 0; z-index: 10; background: #3a3a3a; display: flex; align-items: center; justify-content: center; }
+  #mark { font: 400 clamp(40px, 11vw, 120px)/1 Helvetica, Arial, sans-serif; color: #00ff41; background: none; border: 0; padding: .4em;
+    letter-spacing: 0; white-space: nowrap; cursor: pointer; text-transform: none; }
+</style>
+</head>
+<body>
+<div id="land"><button id="mark" aria-label="enter">◥◣_◢◤</button></div>
+<div id="labels"></div>
+<div id="ui">
+  <div>745 kohler</div>
+  <div class="row" id="setups">
+    <button data-s="0">shell</button><button data-s="2">setup</button>
+  </div>
+  <div class="row">
+    <button id="vIso">iso</button><button id="vTop">top</button><button id="vIn">inside</button>
+    <button id="tLab" class="on">labels</button>
+  </div>
+</div>
+<div id="info">
+  <div class="k"><span class="sw" style="border:1px solid #00ff41"></span>building</div>
+  <div class="k"><span class="sw" style="background:#00ff41"></span>lighting position</div>
+  <div class="k"><span class="sw" style="border:1px solid #e8e8e8"></span>booth / speakers / table</div>
+  <div class="k"><span class="sw" style="background:#ff3b30"></span>barrier</div>
+  <div class="k"><span class="sw" style="background:#ffd60a"></span>power</div>
+  <div>floor 28' × 80' · roof 20' · mezzanine deck 10' · grid 4'</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// units: meters. origin = centre of ground floor. +x = right side seen from kohler st, +z = kohler st (front), +y = up.
+// shell, doors, stair, bathroom block, bar and mezzanine come from the two magicplan scans.
+const FT = 0.3048;
+const W = 4.267, L = 12.192, H = 6.096;      // half width, half length, roof height
+const MEZ_Y = 3.048, MEZ_Z = -1.426;         // mezzanine deck height, front edge
+const G = 0x00ff41, WH = 0xe8e8e8, RED = 0xff3b30, YEL = 0xffd60a;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x3a3a3a);
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 500);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+const mat = (c, o = 1) => new THREE.LineBasicMaterial({ color: c, transparent: o < 1, opacity: o });
+function lines(pts, color, parent = scene, o = 1) {           // pts: flat [x,y,z, x,y,z ...] segment pairs
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const l = new THREE.LineSegments(g, mat(color, o)); parent.add(l); return l;
+}
+function box(x0, x1, y0, y1, z0, z1, color = G, parent = scene, rotY = 0) {
+  const g = new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0);
+  const l = new THREE.LineSegments(new THREE.EdgesGeometry(g), mat(color));
+  l.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2); l.rotation.y = rotY; parent.add(l); return l;
+}
+function solid(x, y, z, s, color, parent) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(s, s, s), new THREE.MeshBasicMaterial({ color }));
+  m.position.set(x, y, z); parent.add(m); return m;
+}
+function rectOnWall(x0, x1, y1, z, color = G) {                // door opening on a z = const wall
+  lines([x0, 0, z, x0, y1, z, x0, y1, z, x1, y1, z, x1, y1, z, x1, 0, z], color);
+}
+
+// ---------- shell
+box(-W, W, 0, H, -L, L);
+const grid = [];
+for (let x = -W + 4 * FT; x < W - .01; x += 4 * FT) grid.push(x, 0, -L, x, 0, L);
+for (let z = -L + 4 * FT; z < L - .01; z += 4 * FT) grid.push(-W, 0, z, W, 0, z);
+lines(grid, G, scene, 0.22);
+
+// ---------- openings
+rectOnWall(-2.281, 0.462, 3.048, L);      // front loading gate 9' x 10'
+rectOnWall(1.866, 2.78, 2.04, L);         // guest door (width assumed 3')
+rectOnWall(-3.171, -0.733, 2.44, -L);     // rear gate 8' wide (height assumed 8')
+
+// ---------- bathroom block (full height in scan) + stair
+box(0.914, W, 0, H, -0.722, 0.802);
+(function stair() {
+  const x0 = -0.697, x1 = W, z0 = -1.283, z1 = -0.303, n = 16, p = [];
+  const run = (x1 - x0) / n, rise = MEZ_Y / n;
+  for (let i = 0; i < n; i++) {
+    const xa = x0 + i * run, xb = xa + run, ya = i * rise, yb = ya + rise;
+    for (const z of [z0, z1]) p.push(xa, ya, z, xa, yb, z, xa, yb, z, xb, yb, z);
+    p.push(xa, yb, z0, xa, yb, z1);
+  }
+  p.push(x0, 0, z0, x0, 0, z1);
+  lines(p, G);
+})();
+
+// ---------- mezzanine (2nd floor): deck over rear 35'4"
+box(-W, W, MEZ_Y - 0.3, MEZ_Y, -L, MEZ_Z);
+
+// ---------- bar (L counter from scan)
+box(2.136, 2.756, 0, 1.07, -L, -9.348);
+box(2.136, 3.165, 0, 1.07, -9.348, -8.728);
+
+// ---------- power (right wall near front)
+const P = px(940, 2147);
+solid(W - 0.08, 1.2, P.z, 0.35, YEL, scene);
+
+// ---------- setups, traced from the two setup plans (plan px -> m)
+function px(x, y) { const k = 0.01773; return { x: -W + (x - 467) * k, z: L - (2235 - y) * k }; }
+const setups = [null, new THREE.Group(), new THREE.Group()];
+scene.add(setups[1], setups[2]);
+const FIX_Y = 2.4;   // nominal stand height for fixture markers
+function fixture(g, x, y, lbl) { const p = px(x, y); solid(p.x, FIX_Y, p.z, 0.3, G, g);
+  lines([p.x, 0, p.z, p.x, FIX_Y, p.z], G, g, 0.6); return p; }
+function barrier(g, a, b) { const p = px(...a), q = px(...b), h = 1.1;
+  lines([p.x, 0, p.z, q.x, 0, q.z, p.x, h, p.z, q.x, h, q.z, p.x, 0, p.z, p.x, h, p.z, q.x, 0, q.z, q.x, h, q.z], RED, g); }
+function item(g, c, w, d, h, rot = 0) { const p = px(...c);
+  const b = box(-w / 2, w / 2, 0, h, -d / 2, d / 2, WH, g, rot); b.position.set(p.x, h / 2, p.z); return p; }
+
+// setup — booth at the loading gate (plan "setup 2")
+{ const g = setups[2];
+  item(g, [647, 2085], 2.5, 0.8, 1.0);
+  item(g, [543, 2086], 0.7, 0.8, 1.6); item(g, [750, 2086], 0.7, 0.8, 1.6);
+  fixture(g, 553, 2040); fixture(g, 728, 2043);
+  [[493, 1636], [493, 1824], [924, 1618], [928, 1881]].forEach(c => fixture(g, ...c));
+  barrier(g, [468, 2083], [522, 2060]); barrier(g, [770, 2107], [808, 2210]); barrier(g, [866, 1137], [946, 1229]);
+  item(g, [886, 2176], 1.06, 0.4, 0.75);
+}
+
+// ---------- labels
+const labelBox = document.getElementById('labels');
+const labels = [];
+function label(text, x, y, z, set = 0, cls = '') {
+  const el = document.createElement('div'); el.className = 'lb ' + cls;
+  el.innerHTML = '<i></i><span></span>'; el.lastChild.textContent = text;
+  labelBox.appendChild(el); labels.push({ el, v: new THREE.Vector3(x, y, z), set });
+}
+label('load-in gate 9\' × 10\'', -0.9, 3.05, L);
+label('guest entrance', 2.3, 2.04, L);
+label('power', W, 1.5, P.z);
+label('bathroom', 2.6, H, 0.04);
+label('stairs', 1.8, 1.7, -0.8);
+label('mezzanine 28\' × 35\'4"', 0, MEZ_Y, MEZ_Z);
+label('bar', 2.45, 1.07, -10.6);
+label('rear gate → yard: smoking, port-o-johns', -1.95, 2.44, -L);
+label('kohler st · truck', -3.6, 0, L + 2.2);
+const s2 = px(647, 2085), dt = px(886, 2176);
+label('dj booth', s2.x, 1.0, s2.z, 2, 'w'); label('strobe / fog', px(728, 2043).x, FIX_Y, px(728, 2043).z, 2);
+label('movers & strobes', px(493, 1824).x, FIX_Y, px(493, 1824).z, 2); label('door table', dt.x, .75, dt.z, 2, 'w');
+
+// ---------- ui
+let setup = 2, showLabels = true;
+function setSetup(n) { setup = n; setups[1].visible = n === 1; setups[2].visible = n === 2;
+  document.querySelectorAll('#setups button').forEach(b => b.classList.toggle('on', +b.dataset.s === n)); }
+document.querySelectorAll('#setups button').forEach(b => b.onclick = () => setSetup(+b.dataset.s));
+function view(p, t) { camera.position.set(...p); controls.target.set(...t); controls.update(); }
+document.getElementById('vIso').onclick = () => view([-16, 14, 23], [0, 2, 0]);
+document.getElementById('vTop').onclick = () => view([0, 42, 0.01], [0, 0, 0]);
+document.getElementById('vIn').onclick = () => view([-1, 1.7, 11], [0.5, 2.4, -2]);
+document.getElementById('tLab').onclick = e => { showLabels = !showLabels; e.target.classList.toggle('on', showLabels); };
+setSetup(2); view([-16, 14, 23], [0, 2, 0]);
+
+// ---------- landing: blink once, then enter
+(function () {
+  const land = document.getElementById('land'), mark = document.getElementById('mark');
+  let busy = false;
+  mark.onclick = () => {
+    if (busy) return; busy = true;
+    mark.textContent = '-_-';
+    setTimeout(() => { mark.textContent = '◥◣_◢◤'; }, 150);
+    setTimeout(() => { land.style.display = 'none'; }, 450);
+  };
+})();
+
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+const v = new THREE.Vector3();
+(function tick() {
+  requestAnimationFrame(tick); controls.update(); renderer.render(scene, camera);
+  for (const l of labels) {
+    v.copy(l.v).project(camera);
+    const on = showLabels && v.z < 1 && (l.set === 0 || l.set === setup);
+    l.el.style.display = on ? 'flex' : 'none';
+    if (on) { l.el.style.left = (v.x + 1) / 2 * innerWidth + 'px'; l.el.style.top = (1 - v.y) / 2 * innerHeight + 'px'; }
+  }
+})();
+</script>
+</body>
+</html>
